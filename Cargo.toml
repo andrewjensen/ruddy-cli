@@ -1,0 +1,9 @@
+[package]
+name = "ruddy-cli"
+version = "0.1.0"
+authors = ["Andrew Jensen <andrewjensen90@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+getopts = "0.2"
+regex = "1"
