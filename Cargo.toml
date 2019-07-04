@@ -7,3 +7,5 @@ edition = "2018"
 [dependencies]
 getopts = "0.2"
 regex = "1"
+termion = "1.5"
+chrono = "0.4"

@@ -1,10 +1,13 @@
-use std::process::Command;
-use std::process::Stdio;
-use std::io::BufReader;
-use std::io::BufRead;
+use std::io::{BufRead,BufReader};
+use std::process::{Command,Stdio};
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use regex::Regex;
 
-use super::RunnerOptions;
+use super::{
+    RunnerOptions,
+    StatusUpdate
+};
 
 // These resources were helpful:
 // https://doc.rust-lang.org/std/process/struct.Command.html
@@ -22,48 +25,70 @@ enum ParseResult {
     None
 }
 
-pub fn run(options: RunnerOptions) {
+pub fn exec_blender(options: Arc<RunnerOptions>, tx: Sender<StatusUpdate>) {
     let mut blender_process = Command::new(BLENDER_CMD_PATH)
         .args(get_arguments(options))
         .stdout(Stdio::piped())
         .spawn()
         .expect("Failed to start the child process");
 
-    println!("Spawned the process...");
-    println!("");
+    tx.send(StatusUpdate::Started)
+        .expect("Unable to send status update");
 
     let mut buffered_stdout = BufReader::new(blender_process.stdout.take().unwrap());
 
     let mut buffer = String::new();
 
+    let mut prev_frame: Option<u32> = None;
+
     while buffered_stdout.read_line(&mut buffer).unwrap() > 0 {
         let line = buffer.clone();
         buffer.clear();
 
-        let parsed_line = parse_line(&line);
-        display_update(&parsed_line);
+        match parse_line(&line) {
+            ParseResult::SavedFrame(frame_number) => {
+                prev_frame = Some(frame_number);
+            },
+            ParseResult::FrameRenderTime(render_time) => {
+                let frame_number = prev_frame.take().unwrap();
+                tx.send(StatusUpdate::RenderedFrame {
+                    frame_number,
+                    render_time
+                })
+                    .expect("Unable to send status update");
+            },
+            _ => {}
+        }
     }
 
     match blender_process.wait() {
         Ok(status) => {
-            println!("");
-            println!("Process finished with status: {}", status);
+            match status.code() {
+                Some(exit_code) => {
+                    if exit_code == 0 {
+                        tx.send(StatusUpdate::Finished)
+                            .expect("Unable to send status update");
+                    } else {
+                        panic!("Blender process exited with non-zero status code: {}", exit_code);
+                    }
+                },
+                None => {
+                    panic!("Blender process terminated by signal");
+                }
+            }
         },
         Err(error) => {
-            println!("");
-            println!("Failed, error: {}", error);
+            panic!("Blender process failed, error: {}", error);
         }
     }
-
-    println!("Done!");
 }
 
-fn get_arguments(options: RunnerOptions) -> Vec<String> {
+fn get_arguments(options: Arc<RunnerOptions>) -> Vec<String> {
     vec![
         "--background".to_owned(),
-        options.input_file,
+        options.input_file.clone(),
         "--render-output".to_owned(),
-        options.output_dir,
+        options.output_dir.clone(),
         "--frame-start".to_owned(),
         format!("{}", options.frame_start),
         "--frame-end".to_owned(),
@@ -106,19 +131,6 @@ fn parse_line(line: &str) -> ParseResult {
     }
 
     ParseResult::None
-}
-
-fn display_update(parsed_line: &ParseResult) {
-    match parsed_line {
-        &ParseResult::CurrentFrame(_frame_number) => {},
-        &ParseResult::SavedFrame(frame_number) => {
-            println!("Rendered frame {}", frame_number);
-        },
-        &ParseResult::FrameRenderTime(ms) => {
-            println!("  (frame was rendered in {} ms)", ms);
-        },
-        &ParseResult::None => {}
-    }
 }
 
 #[cfg(test)]
